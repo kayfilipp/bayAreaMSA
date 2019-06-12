@@ -1,0 +1,231 @@
+---
+title: "Bay Area MSA Analysis"
+author: "Filipp Krasovsky"
+date: "5/20/2019"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+Overview: This analysis serves to identify the temporal signal in housing price growth in the San Francisco/Santa Cruz metropolitan areas, as well as to provide an exercise in vector autoregressive models between the two time series and the shock/effect they have on one another. Data is provided by Freddie Mac, and is fed through both a VAR regression as well as a univariate ARMA analysis for each series; these models are then compared on mean squared errors to determine accuracy. We use a prediction space of the last 20 values for each series.
+
+
+1. Sample Description: non-adjusted MSA prices for San Francisco/Oakland/Hayward and Santa-Cruz/Watsonville
+from Jan 2001 to March 2019 transformed into price growth time series.
+
+For this analysis, we use the forecast, vars, combMsc, and VAR libraries:
+
+```{r message=FALSE, warning=FALSE}
+library('forecast')
+require('vars')
+require('CombMSC')
+library('VAR.etp')
+require('MLmetrics')
+```
+
+Data Source: Freddie Mac, Accessed 5-20-2019: 
+http://www.freddiemac.com/research/indices/house-price-index.page
+
+```{r message=FALSE, warning=FALSE}
+#initialize data 
+z = read.csv('prices.csv',header=TRUE)
+sf = ts(z$SF,start=c(2000,1),freq=12)
+sc = ts(z$SC,start=c(2000,1),freq=12)
+
+#growth transformation 
+sf = diff(sf)
+sc = diff(sc)
+#create a prediction sample and estimation sample 
+sfp=window(sf,start=c(2017,8),freq=12)
+scp=window(sc,start=c(2017,8),freq=12)
+sf=window(sf,start=c(2000,1),end=c(2017,7),freq=12)
+sc=window(sc,start=c(2000,1),end=c(2017,7),freq=12)
+
+tsdisplay(sf,main="Price growth in San Francisco-Oakland-Hayward")
+tsdisplay(sc,main="Price growth in Snata Cruz-Watsonville")
+ccf(sf,sc)
+```
+
+VAR Estimation using BIC suggests an optimal lag-5 VAR fit for the two series.
+
+```{r message=FALSE, warning=FALSE}
+
+y = cbind(sf,sc)
+y_tot = data.frame(y)
+
+bestP = VAR.select(y_tot,ic="sc",pmax=20)
+bestP = as.numeric(bestP$p)#==>5 
+m1 = VAR(y_tot,p=5)
+
+par(mar=c(1,1,1,1))
+plot(sf,main="Diagram of fit for SF")
+lines(ts(m1$varresult$sf$fitted.values,start=c(2000,6),freq=12),col='red')
+legend("topleft",legend=c("Observed","Forecasted"),text.col=c("black","red"),bty="n")
+plot(sc,main="Diagram of fit for SC")
+lines(ts(m1$varresult$sc$fitted.values,start=c(2000,6),freq=12),col='red')
+legend("topleft",legend=c("Observed","Forecasted"),text.col=c("black","red"),bty="n")
+summary(m1)
+Box.test(m1$varresult$sf$residuals)
+Box.test(m1$varresult$sc$residuals)
+```
+
+Remarks: The model fit is, on face value, sufficient enough to reduce the residuals to what appears to be white noise, and qualitatively fits the data provided. The Box-test concludes that we do not have enough evidence to reject the null hypothesis that there is no serial correlation in the residuals for either model.
+San Francisco's price growth is largely dependent on lags of itself at l=1,2,5 and only significant depends on price growth in Santa Clara at lag 1. Santa Clara price growth is significantly correlated to prices in San Francisco at lag = 1,5.
+
+2. Granger Causality Analysis: Time series seem to granger-cause one another; with limited subject matter knowledge, this outcome is intuitive given the level of economic activity in both areas, although there is a higher change of a type-1 error for the rejection of the null hypothesis that San Francisco housing prices do not granger-cause santa cruz prices.
+
+```{r message=FALSE, warning=FALSE}
+grangertest(sf ~ sc, order = bestP)
+grangertest(sc ~ sf, order = bestP)
+```
+
+3. Impulse Response: 
+
+Order does affect the impulse response function visually (sign change), but does not affect the absolute
+value of the impulse.
+Analysis will be done for the original order, preceded by proof of effect from the order change.
+
+```{r message=FALSE, warning=FALSE}
+#order: 1. sf 2.sc 
+ir1 <- irf(m1) 
+
+#order: 1.sc 2.sf 
+y=cbind(sc,sf)
+y_tot=data.frame(y)
+m2 = VAR(y_tot,p=5)
+
+ir2 <-irf(m2)
+plot(ir1)
+plot(ir2)
+```
+
+The impulse effect of San Francisco's housing price growth remains relatively constant for 5 months, become insignificant at month 6 in affect future housing prices in San Francisco. For Santa Cruz, the impulse retains the same behavior, becoming insignificant after 7 months and slowly declines in effect beforehand with a sharp spike in month 1. The effect of Santa Cruz's price increase seems to have a long term effect on San Francisco housing prices that eventally terminalizes at a price drop of -.4 into month 10, with similar behavior in affecting future prices of itself. In short, San Francisco shocks have a large effect that decays slowly, while Santa Cruz shocks have no effect at first but increase over time in absolute magnitude.
+
+4. Prediction/Forecast:
+We begin with a 1-step ahead forecast for the VAR model, and compare it with 1 step ahead forecast for a univariate model of each series.
+The ACF+PACF of San Francisco prices suggest an AR-12 model as a possible univariate fit, while Santa Cruz possibly follows an AR series of order 15.
+A summary conclusion of the difference between the VAR forecast and AR forecasts suggests that the univariate model performs slightly better for the 1 step ahead forecast.
+
+```{r}
+m1.predict = predict(m1,n.ahead=1)
+plot(m1.predict)
+
+#univariate models:
+u1= arima(sf,order=c(12,0,0))
+u2= arima(sc,order=c(15,0,0))
+
+u1.p = predict(u1,n.ahead=1)
+u2.p = predict(u2,n.ahead=1)
+
+#residual computation for 1 step ahead 
+sf.h1 <- sfp[1]
+sc.h1 <- scp[1]
+
+"MSE for VAR predict: San Francisco Prices"
+(m1.predict$fcst$sf[1] - sf.h1)^2
+"MSE for VAR predict: Santa Cruz Prices"
+(m1.predict$fcst$sc[1] - sc.h1)^2
+"MSE for ARMA forecast: San Francisco Prices"
+(u1.p$pred[1] - sf.h1)^2
+"MSE for ARMA forecast: Santa Cruz Prices"
+(u2.p$pred[1] - sc.h1)^2
+```
+
+5. After a 1-step ahead forecast, we move to a 20-step ahead forecast. After this, we include data from a third MSA outside the Bay Area for VAR analysis and Granger Causality.
+
+```{r}
+m2 = predict(m1,n.ahead=20)
+u1.p = predict(u1,n.ahead=20) #sf
+u2.p = predict(u2,n.ahead=20) #sc
+
+plot(m2)
+
+plot(sf,main="20 Step forecast for San Francisco Prices, Univariate")
+lines(u1.p$pred,col='blue')
+lines(u1.p$pred+u1.p$se,col='red')
+lines(u1.p$pred-u1.p$se,col='red')
+lines(sfp)
+legend("topleft",legend=c("Observed","Forecasted","CI"),text.col=c("black","blue","red"),bty="n")
+
+plot(sc,main="20 Step forecast for Santa Cruz Prices, Univariate")
+lines(u2.p$pred,col='blue')
+lines(u2.p$pred+u2.p$se,col='red')
+lines(u2.p$pred-u2.p$se,col='red')
+lines(scp)
+legend("topleft",legend=c("Observed","Forecasted","CI"),text.col=c("black","blue","red"),bty="n")
+
+#MSE analysis
+m2.sfe <- MSE(m2$fcst$sf[,1],sfp)
+m2.sce <- MSE(m2$fcst$sc[,1],scp)
+u1.e  <- MSE(u1.p$pred,sfp)
+u2.e  <- MSE(u2.p$pred,scp)
+
+"VAR Model: San Francisco Prices, Santa Cruz Prices Mean Squared Error"
+m2.sfe 
+m2.sce
+"ARMA Models: San Francisco Prices, Santa Cruz Prices Mean Squared Error"
+u1.e
+u2.e
+```
+
+Again, the univariate forecast outperforms the VAR model considerably, judging by the MSE figures provided above.
+From this point, we include analysis on MSA price growth from the San Antonio-New Braunfels, TX MSA for the same period of time and
+calculate growth rates as well as divide it into a prediction and estimate space.
+
+```{r}
+sa = ts(z$SA,start=c(2000,1),freq=12)
+sa = diff(sa)
+sap=window(sa,start=c(2017,8),freq=12)
+sa =window(sa,start=c(2000,1),end=c(2017,7),freq=12)
+plot(sa,main="San Antonio MSE price growth, 2000-2017")
+lines(sap,col='blue')
+legend("topleft",legend=c("Estimation Space","Prediction Space"),text.col=c("black","blue"),bty="n")
+tsdisplay(sa,main="San Antonio MSA growth")
+```
+
+A qualitative asessment of the series shows a persistent seasonal component with a relatively linear trend and possibly an AR process. THe strength of the seasonal component seems to increase with time, as evidence by the increase in variance between 2000-2005 and 2008-2010, for instance. The drop in price growth right before 2010 can be interpreted in the context of subject matter as being affected by the 2008 recession.
+
+
+6. From here, we use this MSA and compare it against the San Francisco MSA in a VAR model with an optimally structured lag, which we will use to construct a 20 step ahead forecast. Afterwards, we inspect for Granger causality and conclude with some remarks on the forecast.
+
+```{r}
+y2 = cbind(sf,sa)
+y_tot2 = data.frame(y2)
+bestP <- VAR.select(y_tot2,ic="sc",pmax=20) #optimal lag = 10
+
+m3 <- VAR(y_tot2,p=10)
+m3.predict <- predict(m3,n.ahead=20)
+plot(m3.predict)
+
+plot(sfp,main="San Francisco 20 step forecast")
+lines(ts(m3.predict$fcst$sf[,1],start=c(2017,8),freq=12),col='red')
+legend("topleft",legend=c("Observed","Forecasted"),text.col=c("black","red"),bty="n")
+
+plot(sap,main="San Antonio 20 step forecast")
+lines(ts(m3.predict$fcst$sa[,1],start=c(2017,8),freq=12),col='red')
+legend("topleft",legend=c("Observed","Forecasted"),text.col=c("black","red"),bty="n")
+
+plot(sfp-m3.predict$fcst$sf[,1],main="Residuals for SF forecast")
+plot(sap-m3.predict$fcst$sa[,1],main="Residuals for S. Antonio Forecast")
+
+#residual construction (MSE)
+sf_res<- MSE(m3.predict$fcst$sf[,1],sfp)
+sa_res<- MSE(m3.predict$fcst$sa[,1],sap)
+"MSE: San Francisco, San Antonio"
+sf_res 
+sa_res 
+
+
+```
+
+Overall, the forecasted data is roughly consistent with the observed prediction space from a qualitatitve level, but analysis of the residuals for both forecasts reveals that the VAR forecast did not capture all dynamics within the data. This is apparent in the residual plot of the forecast for San Antonio home price growth, wherein residuals seem to fluctuate seasonally year-yo-year. Overall, while sufficient at capturing the inter-data dynamic, the VAR model alone does not account for the signal.
+
+Finally, we move the granger analysis:
+
+```{r}
+grangertest(sf,sa)
+grangertest(sa,sf)
+```
+
+The granger causality test leads us to reject the null hypothesis that San Francisco home prices do not explain the variance in San Antonio price growth, and therefore have evidence to conclude that San Francisco MSA growth granger-causes San Antonio's MSA growth. The converse, however, is not true, and there is no evidence to accept the alternative hypothesis that San Antonio granger-causes San Francisco home price growth.
